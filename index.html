@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Pump.fun Web Terminal (Web3.js Enabled)</title>
+    
+    <script src="https://unpkg.com/@solana/web3.js@latest/lib/index.iife.min.js"></script>
+    
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            background-color: #0d1117; color: #c9d1d9;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+            display: flex; justify-content: center; align-items: flex-start;
+            min-height: 100vh; padding: 20px;
+        }
+        .dashboard { display: grid; grid-template-columns: 1fr; gap: 20px; width: 100%; max-width: 800px; }
+        .panel { background-color: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; }
+        header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #30363d; padding-bottom: 15px; margin-bottom: 20px; }
+        h1 { font-size: 1.4rem; color: #58a6ff; }
+        h2 { font-size: 1.1rem; margin-bottom: 15px; color: #8b949e; border-bottom: 1px solid #30363d; padding-bottom: 5px; }
+        .btn { background-color: #238636; color: #ffffff; border: 1px solid rgba(240, 246, 252, 0.1); padding: 8px 16px; border-radius: 6px; font-weight: 600; cursor: pointer; transition: background-color 0.2s; }
+        .btn:hover { background-color: #2ea043; }
+        .btn-action { background-color: #8957e5; width: 100%; margin-top: 10px; }
+        .btn-action:hover { background-color: #7a4dd1; }
+        .hidden { display: none !important; }
+        #wallet-badge { background: #21262d; border: 1px solid #30363d; padding: 6px 12px; border-radius: 2em; font-family: monospace; font-size: 0.9rem; color: #3fb950; }
+        .controls-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px; }
+        .form-group { display: flex; flex-direction: column; }
+        label { margin-bottom: 6px; font-size: 0.85rem; color: #8b949e; font-weight: 600; }
+        input[type="number"], select { padding: 10px; background-color: #0d1117; border: 1px solid #30363d; color: #c9d1d9; border-radius: 6px; font-size: 0.95rem; outline: none; }
+        .terminal-window { background-color: #010409; border: 1px solid #30363d; border-radius: 6px; padding: 15px; height: 300px; overflow-y: auto; font-family: 'Courier New', Courier, monospace; font-size: 0.85rem; color: #8b949e; margin-bottom: 15px; }
+        .terminal-window p { margin-bottom: 5px; line-height: 1.4; word-break: break-all; }
+        .log-info { color: #58a6ff; }
+        .log-success { color: #3fb950; }
+        .log-warn { color: #d29922; }
+        .log-err { color: #f85149; }
+        @media (min-width: 768px) { .dashboard { grid-template-columns: 1fr 1fr; } .panel.full-width { grid-column: 1 / -1; } }
+    </style>
+</head>
+<body>
+
+    <div class="dashboard">
+        <div class="panel full-width">
+            <header>
+                <h1>Pump.fun Web Terminal</h1>
+                <button id="connect-wallet" class="btn">Connect Phantom</button>
+                <div id="wallet-badge" class="hidden"></div>
+            </header>
+            <p style="font-size: 0.85rem; color: #8b949e;">⚠️ Using solanaWeb3.js via CDN to trigger manual wallet approvals.</p>
+        </div>
+
+        <div class="panel">
+            <h2>Trade Parameters</h2>
+            <div class="controls-grid">
+                <div class="form-group">
+                    <label>Trade Amount ($)</label>
+                    <input type="number" id="trade-amount" value="2" step="any">
+                </div>
+                <div class="form-group">
+                    <label>Estimated SOL</label>
+                    <input type="number" id="sol-amount" value="0.01" step="any">
+                </div>
+            </div>
+            
+            <button id="simulate-buy" class="btn btn-action" disabled>Simulate Token Buy (Trigger Phantom)</button>
+        </div>
+
+        <div class="panel">
+            <h2>System Logs</h2>
+            <div id="terminal" class="terminal-window">
+                <p>System initialized. Waiting for wallet connection...</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const connectBtn = document.getElementById('connect-wallet');
+            const walletBadge = document.getElementById('wallet-badge');
+            const simulateBuyBtn = document.getElementById('simulate-buy');
+            const terminal = document.getElementById('terminal');
+            
+            let walletAddress = null;
+            let provider = null;
+
+            // Initialize Solana Connection (Using public mainnet endpoint. It may be rate-limited!)
+            // For testing without spending real money, you can change 'mainnet-beta' to 'devnet'
+            const connection = new solanaWeb3.Connection(solanaWeb3.clusterApiUrl('mainnet-beta'), 'confirmed');
+
+            const log = (msg, type = 'info') => {
+                const p = document.createElement('p');
+                const time = new Date().toLocaleTimeString();
+                p.className = `log-${type}`;
+                p.innerText = `[${time}] ${msg}`;
+                terminal.appendChild(p);
+                terminal.scrollTop = terminal.scrollHeight;
+            };
+
+            const getProvider = () => {
+                if ('phantom' in window) return window.phantom?.solana;
+                if ('solana' in window && window.solana.isPhantom) return window.solana;
+                return null;
+            };
+
+            connectBtn.addEventListener('click', async () => {
+                provider = getProvider();
+                if (provider) {
+                    try {
+                        const resp = await provider.connect();
+                        walletAddress = resp.publicKey.toString();
+                        
+                        connectBtn.classList.add('hidden');
+                        walletBadge.classList.remove('hidden');
+                        walletBadge.innerText = `${walletAddress.slice(0, 4)}...${walletAddress.slice(-4)}`;
+                        
+                        log(`Wallet connected: ${walletAddress}`, 'success');
+                        simulateBuyBtn.disabled = false;
+
+                    } catch (err) {
+                        log("Connection rejected by user.", 'err');
+                    }
+                } else {
+                    log("Phantom Wallet not found. Please install extension.", 'err');
+                }
+            });
+
+            simulateBuyBtn.addEventListener('click', async () => {
+                if (!provider || !walletAddress) return;
+
+                const solAmount = parseFloat(document.getElementById('sol-amount').value);
+                
+                log(`🚨 Simulated Token Found! Preparing transaction for ${solAmount} SOL...`, 'warn');
+                simulateBuyBtn.disabled = true;
+                simulateBuyBtn.innerText = "Check Phantom Popup...";
+
+                try {
+                    // 1. Create a new empty Transaction object
+                    const transaction = new solanaWeb3.Transaction();
+
+                    // 2. Add an instruction. 
+                    // To keep this safe and functional without complex Pump.fun reverse-engineering,
+                    // we will create an instruction to send a tiny amount of SOL to YOURSELF.
+                    // This proves the system works without you losing money or sending it to a random address.
+                    const fromPubkey = new solanaWeb3.PublicKey(walletAddress);
+                    const toPubkey = new solanaWeb3.PublicKey(walletAddress); // Sending to self for testing
+                    const lamports = solAmount * solanaWeb3.LAMPORTS_PER_SOL;
+
+                    transaction.add(
+                        solanaWeb3.SystemProgram.transfer({
+                            fromPubkey: fromPubkey,
+                            toPubkey: toPubkey,
+                            lamports: lamports,
+                        })
+                    );
+
+                    // 3. Set the fee payer
+                    transaction.feePayer = fromPubkey;
+
+                    // 4. Get the latest blockhash from the network
+                    log("Fetching recent blockhash from network...", 'info');
+                    const { blockhash } = await connection.getLatestBlockhash('confirmed');
+                    transaction.recentBlockhash = blockhash;
+
+                    // 5. Ask Phantom to Sign and Send the transaction
+                    log("Waiting for user approval in Phantom...", 'warn');
+                    
+                    const { signature } = await provider.signAndSendTransaction(transaction);
+                    
+                    log(`✅ Transaction signed & sent!`, 'success');
+                    log(`Signature: ${signature}`, 'info');
+                    log(`Confirming transaction on blockchain...`, 'info');
+
+                    // 6. Wait for network confirmation
+                    await connection.confirmTransaction(signature, 'confirmed');
+                    log(`🎉 Transaction officially confirmed on Solana!`, 'success');
+
+                } catch (err) {
+                    console.error(err);
+                    log(`❌ Transaction failed or rejected: ${err.message}`, 'err');
+                } finally {
+                    simulateBuyBtn.disabled = false;
+                    simulateBuyBtn.innerText = "Simulate Token Buy (Trigger Phantom)";
+                }
+            });
+        });
+    </script>
+</body>
+</html>
