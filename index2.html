@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Advanced Web3 Sniper Terminal</title>
+    
+    <script src="https://unpkg.com/@solana/web3.js@latest/lib/index.iife.min.js"></script>
+    
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { background-color: #0d1117; color: #c9d1d9; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; display: flex; justify-content: center; align-items: flex-start; min-height: 100vh; padding: 20px; }
+        .dashboard { display: grid; grid-template-columns: 1fr; gap: 20px; width: 100%; max-width: 900px; }
+        .panel { background-color: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; }
+        header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #30363d; padding-bottom: 15px; margin-bottom: 20px; }
+        h1 { font-size: 1.4rem; color: #58a6ff; }
+        h2 { font-size: 1.1rem; margin-bottom: 15px; color: #8b949e; border-bottom: 1px solid #30363d; padding-bottom: 5px; }
+        .btn { background-color: #238636; color: #ffffff; border: 1px solid rgba(240, 246, 252, 0.1); padding: 10px 16px; border-radius: 6px; font-weight: 600; cursor: pointer; transition: background-color 0.2s; }
+        .btn:hover { background-color: #2ea043; }
+        .btn-danger { background-color: #da3633; }
+        .btn-danger:hover { background-color: #b32d2a; }
+        .btn:disabled { background-color: #21262d; color: #8b949e; cursor: not-allowed; border-color: #30363d; }
+        .hidden { display: none !important; }
+        #wallet-badge { background: #21262d; border: 1px solid #30363d; padding: 6px 12px; border-radius: 2em; font-family: monospace; font-size: 0.9rem; color: #3fb950; }
+        .controls-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px; }
+        .form-group { display: flex; flex-direction: column; }
+        .form-group.full-width { grid-column: 1 / -1; }
+        label { margin-bottom: 6px; font-size: 0.85rem; color: #8b949e; font-weight: 600; }
+        input[type="text"], input[type="number"], select { padding: 10px; background-color: #0d1117; border: 1px solid #30363d; color: #c9d1d9; border-radius: 6px; font-size: 0.95rem; outline: none; width: 100%; }
+        input:focus, select:focus { border-color: #58a6ff; }
+        .terminal-window { background-color: #010409; border: 1px solid #30363d; border-radius: 6px; padding: 15px; height: 350px; overflow-y: auto; font-family: 'Courier New', Courier, monospace; font-size: 0.85rem; color: #8b949e; }
+        .terminal-window p { margin-bottom: 5px; line-height: 1.4; word-break: break-all; }
+        .log-info { color: #58a6ff; }
+        .log-success { color: #3fb950; }
+        .log-warn { color: #d29922; }
+        .log-err { color: #f85149; }
+        @media (min-width: 768px) { .dashboard { grid-template-columns: 1fr 1fr; } .panel.full-width { grid-column: 1 / -1; } }
+    </style>
+</head>
+<body>
+
+    <div class="dashboard">
+        <div class="panel full-width">
+            <header>
+                <h1>Web3 Sniper Terminal</h1>
+                <button id="connect-wallet" class="btn">Connect Phantom</button>
+                <div id="wallet-badge" class="hidden"></div>
+            </header>
+            <p style="font-size: 0.85rem; color: #8b949e;">This client-side terminal listens to the blockchain via WebSockets and uses the Jupiter API to route transactions directly to your Phantom wallet for approval.</p>
+        </div>
+
+        <div class="panel">
+            <h2>Connection & Trade Settings</h2>
+            <div class="controls-grid">
+                <div class="form-group full-width">
+                    <label>Dedicated RPC URL (Helius / QuickNode)</label>
+                    <input type="text" id="rpc-url" placeholder="https://mainnet.helius-rpc.com/?api-key=..." value="https://api.mainnet-beta.solana.com">
+                    <small style="color: #f85149; margin-top: 4px; font-size: 0.75rem;">*Public RPCs will drop WSS connections.</small>
+                </div>
+                <div class="form-group">
+                    <label>Trade Amount (SOL)</label>
+                    <input type="number" id="trade-amount-sol" value="0.001" step="any">
+                </div>
+                <div class="form-group">
+                    <label>Slippage (%)</label>
+                    <input type="number" id="slippage" value="15">
+                </div>
+            </div>
+            
+            <button id="toggle-bot" class="btn" style="width: 100%; margin-top: 10px;" disabled>Start WebSocket Listener</button>
+        </div>
+
+        <div class="panel">
+            <h2>Live Feed</h2>
+            <div id="terminal" class="terminal-window">
+                <p class="log-info">System initialized. Waiting for Phantom connection...</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const connectBtn = document.getElementById('connect-wallet');
+            const walletBadge = document.getElementById('wallet-badge');
+            const toggleBotBtn = document.getElementById('toggle-bot');
+            const terminal = document.getElementById('terminal');
+            const rpcInput = document.getElementById('rpc-url');
+            
+            let walletAddress = null;
+            let provider = null;
+            let connection = null;
+            let wssSubscriptionId = null;
+            let isListening = false;
+            let isProcessingTrade = false;
+
+            // Pump.fun Program ID
+            const PUMP_FUN_PROGRAM_ID = new solanaWeb3.PublicKey("6EF8rrecthR5Dkzon8Nwu78hRvfX9PNnZJntkXwRoPZ");
+            
+            // TARGET TOKEN: Defaults to USDC for safe Jupiter API testing. 
+            // In a real scenario, this would be dynamically extracted from the WSS log.
+            const TARGET_TOKEN_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"; 
+            const SOL_MINT = "So11111111111111111111111111111111111111112";
+
+            const log = (msg, type = 'info') => {
+                const p = document.createElement('p');
+                const time = new Date().toLocaleTimeString();
+                p.className = `log-${type}`;
+                p.innerText = `[${time}] ${msg}`;
+                terminal.appendChild(p);
+                terminal.scrollTop = terminal.scrollHeight;
+            };
+
+            const getProvider = () => {
+                if ('phantom' in window) return window.phantom?.solana;
+                if ('solana' in window && window.solana.isPhantom) return window.solana;
+                return null;
+            };
+
+            // 1. Connect Wallet
+            connectBtn.addEventListener('click', async () => {
+                provider = getProvider();
+                if (provider) {
+                    try {
+                        const resp = await provider.connect();
+                        walletAddress = resp.publicKey.toString();
+                        
+                        connectBtn.classList.add('hidden');
+                        walletBadge.classList.remove('hidden');
+                        walletBadge.innerText = `${walletAddress.slice(0, 4)}...${walletAddress.slice(-4)}`;
+                        
+                        log(`Wallet connected: ${walletAddress}`, 'success');
+                        toggleBotBtn.disabled = false;
+
+                    } catch (err) {
+                        log("Connection rejected by user.", 'err');
+                    }
+                } else {
+                    log("Phantom Wallet not found. Please install extension.", 'err');
+                }
+            });
+
+            // 2. Toggle WebSockets
+            toggleBotBtn.addEventListener('click', () => {
+                if (!isListening) {
+                    startListening();
+                } else {
+                    stopListening();
+                }
+            });
+
+            function startListening() {
+                const rpcUrl = rpcInput.value.trim();
+                // Determine WSS URL from RPC URL
+                let wssUrl = rpcUrl.replace('https://', 'wss://').replace('http://', 'ws://');
+                
+                connection = new solanaWeb3.Connection(rpcUrl, { wsEndpoint: wssUrl, commitment: 'confirmed' });
+                
+                isListening = true;
+                toggleBotBtn.innerText = "Stop Listener";
+                toggleBotBtn.classList.add('btn-danger');
+                rpcInput.disabled = true;
+
+                log(`Connecting to WebSocket...`, 'info');
+                log(`Targeting Program: ${PUMP_FUN_PROGRAM_ID.toString()}`, 'info');
+
+                try {
+                    wssSubscriptionId = connection.onLogs(
+                        PUMP_FUN_PROGRAM_ID,
+                        async (logs, ctx) => {
+                            if (logs.err) return;
+
+                            // Look for mint/create instructions
+                            if (logs.logs.some(l => l.includes("InitializeMint") || l.includes("Create"))) {
+                                log(`🚨 Potential New Token Tx: ${logs.signature}`, 'warn');
+                                
+                                // Prevent multiple popups at the exact same time
+                                if (!isProcessingTrade) {
+                                    isProcessingTrade = true;
+                                    log(`Stopping listener to process trade...`, 'info');
+                                    stopListening(); // Auto-stop to handle the popup safely
+                                    
+                                    // Trigger the Jupiter Swap Flow
+                                    await executeJupiterSwap();
+                                }
+                            }
+                        },
+                        "confirmed"
+                    );
+                    log(`✅ WebSocket Subscribed successfully (ID: ${wssSubscriptionId})`, 'success');
+                    log(`Waiting for new pump.fun token creation events...`, 'warn');
+                } catch (err) {
+                    log(`❌ WebSocket Error: ${err.message}`, 'err');
+                    stopListening();
+                }
+            }
+
+            function stopListening() {
+                if (wssSubscriptionId !== null && connection) {
+                    connection.removeOnLogsListener(wssSubscriptionId);
+                    wssSubscriptionId = null;
+                }
+                isListening = false;
+                toggleBotBtn.innerText = "Start WebSocket Listener";
+                toggleBotBtn.classList.remove('btn-danger');
+                rpcInput.disabled = false;
+                log("Listener stopped.", 'info');
+            }
+
+            // 3. Jupiter API Transaction Builder
+            async function executeJupiterSwap() {
+                try {
+                    const solAmount = parseFloat(document.getElementById('trade-amount-sol').value);
+                    const slippage = parseFloat(document.getElementById('slippage').value);
+                    const amountInLamports = Math.floor(solAmount * 1000000000); // Convert SOL to Lamports
+                    const slippageBps = slippage * 100;
+
+                    log(`📡 Requesting route from Jupiter API for ${solAmount} SOL to USDC...`, 'info');
+
+                    // Step A: Get Quote
+                    const quoteUrl = `https://quote-api.jup.ag/v6/quote?inputMint=${SOL_MINT}&outputMint=${TARGET_TOKEN_MINT}&amount=${amountInLamports}&slippageBps=${slippageBps}`;
+                    const quoteResponse = await fetch(quoteUrl).then(res => res.json());
+
+                    if (quoteResponse.error) {
+                        throw new Error(`Jupiter Quote Error: ${quoteResponse.error}`);
+                    }
+                    log(`✅ Route found! Expected Output: ${quoteResponse.outAmount / 1000000} USDC`, 'success');
+
+                    // Step B: Get Serialized Transaction
+                    log(`📦 Requesting transaction payload from Jupiter...`, 'info');
+                    const swapResponse = await fetch('https://quote-api.jup.ag/v6/swap', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            quoteResponse: quoteResponse,
+                            userPublicKey: walletAddress,
+                            wrapAndUnwrapSol: true
+                        })
+                    }).then(res => res.json());
+
+                    if (swapResponse.error) {
+                        throw new Error(`Jupiter Swap Error: ${swapResponse.error}`);
+                    }
+
+                    // Step C: Deserialize the Base64 Transaction
+                    const swapTransactionBuf = Uint8Array.from(atob(swapResponse.swapTransaction), c => c.charCodeAt(0));
+                    const transaction = solanaWeb3.VersionedTransaction.deserialize(swapTransactionBuf);
+
+                    // Step D: Trigger Phantom
+                    log(`🔥 Throwing Phantom Popup for User Approval...`, 'warn');
+                    const { signature } = await provider.signAndSendTransaction(transaction);
+                    
+                    log(`🚀 Transaction Sent! Signature: ${signature}`, 'success');
+                    log(`Waiting for blockchain confirmation...`, 'info');
+
+                    // Note: Depending on the RPC, confirmTransaction might fail if the RPC is slow, 
+                    // but the transaction may still succeed on-chain.
+                    await connection.confirmTransaction(signature, 'confirmed');
+                    log(`🎉 SWAP CONFIRMED ON BLOCKCHAIN!`, 'success');
+
+                } catch (err) {
+                    console.error(err);
+                    log(`❌ Trade Failed/Rejected: ${err.message}`, 'err');
+                } finally {
+                    isProcessingTrade = false;
+                }
+            }
+        });
+    </script>
+</body>
+</html>
